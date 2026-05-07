@@ -1,0 +1,14 @@
+## Interface: 110200
+## Title: |cff4beb2cFloppyUI|r
+## Notes: An ElvUI extension by Floppydin.
+## Author: Floppydin
+## Version: 0.1.0
+## SavedVariables: FloppyUIDB
+## OptionalDeps: ElvUI, ElvUI_WindTools, BigWigs, MethodRaidTools, NorthernSkyRaidTools
+## AddonCompartmentFunc: FloppyUI_OnAddonCompartmentClick
+
+Libs\Libs.xml
+Locales\Locales.xml
+Init.lua
+Core\Core.xml
+Modules\Modules.xml
