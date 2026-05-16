@@ -2,5 +2,6 @@
 	<Script file="Defaults.lua"/>
 	<Script file="Profiles.lua"/>
 	<Script file="Core.lua"/>
+	<Script file="ElvUI.lua"/>
 	<Script file="Installer.lua"/>
 </Ui>
