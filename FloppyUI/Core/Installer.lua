@@ -21,6 +21,8 @@ local _, FloppyPrivate = ...
 local format      = string.format
 local CreateFrame = CreateFrame
 local C_UI_Reload = C_UI.Reload
+local StaticPopup_Show     = StaticPopup_Show
+local StaticPopupDialogs   = StaticPopupDialogs
 
 -- Visual constants
 local FRAME_WIDTH       = 600
@@ -33,6 +35,10 @@ local COLOR_FLOPPY      = { 0.294, 0.922, 0.173 } -- #4beb2c
 local COLOR_STEP        = { 1, 1, 1 }
 local COLOR_STEP_ACTIVE = { 0, 0.702, 1 } -- #00b3ff
 
+-- ElvUI profile names used by Step 2 (FloppyUI spec).
+local PROFILE_DPSTANK = 'FloppyUI-DpsTank'
+local PROFILE_HEAL    = 'FloppyUI-Heal'
+
 local Installer = {}
 FloppyPrivate.Installer = Installer
 
@@ -40,6 +46,35 @@ local mainFrame, stepFrame
 local currentPage = 0
 local pages       = {}
 local stepTitles  = {}
+
+----------------------------------------------------------------------
+-- Reload confirmation popup
+----------------------------------------------------------------------
+-- Shown after an import that requires a /reload. On accept it stores the
+-- page to resume at and reloads the UI; the installer reopens at that
+-- page on the next PLAYER_ENTERING_WORLD (handled in Core.lua).
+
+StaticPopupDialogs['FLOPPYUI_RELOAD_REQUIRED'] = {
+	text = '|cff4beb2cFloppyUI|r\n\nThe import was applied. A UI reload is required for all changes to take effect.\n\nReloading is mandatory for the profile to display correctly.',
+	button1 = 'Reload Now',
+	button2 = 'Later',
+	OnAccept = function()
+		Installer:ReloadAt(currentPage)
+	end,
+	OnCancel = function()
+		-- "Later": keep the resume marker so the installer still returns
+		-- to this page whenever the next reload happens.
+		Installer:SavePage(currentPage)
+	end,
+	timeout = 0,
+	whileDead = 1,
+	hideOnEscape = 0,
+	preferredIndex = 3,
+}
+
+local function PromptReload()
+	StaticPopup_Show('FLOPPYUI_RELOAD_REQUIRED')
+end
 
 ----------------------------------------------------------------------
 -- Templates
@@ -285,7 +320,7 @@ function Installer:Previous()
 end
 
 ----------------------------------------------------------------------
--- Step definitions (placeholders -- real logic comes step by step)
+-- Step definitions
 ----------------------------------------------------------------------
 
 local function SetOption(index, text, onClick)
@@ -293,6 +328,22 @@ local function SetOption(index, text, onClick)
 	b:SetText(text)
 	b:SetScript('OnClick', onClick)
 	b:Show()
+end
+
+-- Shared handler for Step 2 layout buttons.
+-- Applies the layout via the ElvUI interface and, on success, prompts
+-- for the mandatory reload.
+local function ApplyElvUILayout(layoutKey, profileName)
+	local iface = FloppyPrivate.ElvUIInterface
+	if not iface then
+		FloppyPrivate:Print('|cffC80000ElvUI interface not available.|r')
+		return
+	end
+
+	local success = iface:ApplyLayout(layoutKey, profileName)
+	if success then
+		PromptReload()
+	end
 end
 
 local function BuildPages()
@@ -318,19 +369,44 @@ local function BuildPages()
 	stepTitles[2] = 'ElvUI Layouts'
 	pages[2] = function()
 		mainFrame.SubTitle:SetText('ElvUI Layouts')
-		mainFrame.Desc[1]:SetText('Choose the ElvUI layout that fits your role.')
-		mainFrame.Desc[2]:SetText(format('|cff4beb2c%s|r', 'Recommended step. Should not be skipped.'))
-		SetOption(1, 'DPS & Tanks', function() FloppyPrivate:Print('Layout: DPS & Tanks (TODO)') end)
-		SetOption(2, 'Healing',     function() FloppyPrivate:Print('Layout: Healing (TODO)') end)
+		mainFrame.Desc[1]:SetText('Choose the ElvUI layout that fits your role. The layout is imported into a dedicated FloppyUI profile.')
+		mainFrame.Desc[2]:SetText(format('|cff4beb2c%s|r', 'Import order: Profile, Global, Private. A mandatory reload follows.'))
+		mainFrame.Desc[3]:SetText('DPS & Tanks creates the profile "FloppyUI-DpsTank".')
+		SetOption(1, 'DPS & Tanks', function()
+			ApplyElvUILayout('DpsTank', PROFILE_DPSTANK)
+		end)
+		-- Healing has no strings yet -- present it as not-yet-available.
+		local healing = FloppyPrivate.Profiles
+			and FloppyPrivate.Profiles.ElvUI
+			and FloppyPrivate.Profiles.ElvUI.Healing
+		if healing and healing.profile and healing.profile ~= '' then
+			SetOption(2, 'Healing', function()
+				ApplyElvUILayout('Healing', PROFILE_HEAL)
+			end)
+		else
+			SetOption(2, '|cff888888Healing (soon)|r', function()
+				FloppyPrivate:Print('The Healing layout will be available in a future update.')
+			end)
+		end
 	end
 
 	-- 3: ElvUI Filters
 	stepTitles[3] = 'ElvUI Filters'
 	pages[3] = function()
 		mainFrame.SubTitle:SetText('ElvUI Filters')
-		mainFrame.Desc[1]:SetText('Apply the FloppyUI Aura Indicators and aura filter lists.')
-		mainFrame.Desc[2]:SetText(format('|cff4beb2c%s|r', 'Recommended step. Should not be skipped.'))
-		SetOption(1, 'Setup Aura Indicators', function() FloppyPrivate:Print('Filters setup (TODO)') end)
+		mainFrame.Desc[1]:SetText('Optionally apply the FloppyUI aura filter lists.')
+		mainFrame.Desc[2]:SetText(format('|cff4beb2c%s|r', 'This step is optional. Skip it if you prefer to keep your own filters.'))
+		mainFrame.Desc[3]:SetText('Existing filters with the same name will be overwritten.')
+		SetOption(1, 'Apply Aura Filters', function()
+			local iface = FloppyPrivate.ElvUIInterface
+			if not iface then
+				FloppyPrivate:Print('|cffC80000ElvUI interface not available.|r')
+				return
+			end
+			if iface:ApplyAuraFilters() then
+				PromptReload()
+			end
+		end)
 	end
 
 	-- 4: ElvUI Plugins
