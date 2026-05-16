@@ -12,22 +12,26 @@
 --     account-wide respectively). This is expected ElvUI behaviour.
 --
 -- Public API (FloppyPrivate.ElvUIInterface):
---   :IsReady()                     -> bool, errorText
---   :CreateAndSwitchProfile(name)  -> bool
---   :ImportString(string)          -> bool
---   :ApplyLayout(layoutKey)        -> bool   (Step 2)
---   :ApplyAuraFilters()            -> bool   (Step 3)
+--   :IsReady()                            -> bool, errorText
+--   :CreateAndSwitchProfile(name)         -> bool
+--   :ImportString(string)                 -> bool
+--   :ApplyLayout(layoutKey, profileName)  -> bool   (Step 2)
+--   :ApplyAuraFilters()                   -> bool   (Step 3)
 
 local _, FloppyPrivate = ...
+
+-- Lua / API cache
+local format = string.format
+local pcall  = pcall
+local type   = type
 
 local Interface = {}
 FloppyPrivate.ElvUIInterface = Interface
 
--- Resolve ElvUI's core objects lazily (ElvUI may load after FloppyUI).
+-- Resolve ElvUI's core object lazily (ElvUI may load after FloppyUI).
 local function GetElv()
 	if not ElvUI then return nil end
-	local E = ElvUI[1]
-	return E
+	return ElvUI[1]
 end
 
 ----------------------------------------------------------------------
@@ -125,7 +129,7 @@ end
 -- Step 2: apply a full layout (profile + global + private)
 ----------------------------------------------------------------------
 
--- layoutKey is a key inside FloppyPrivate.Profiles.ElvUI, e.g. 'DpsTank'.
+-- layoutKey   is a key inside FloppyPrivate.Profiles.ElvUI, e.g. 'DpsTank'.
 -- profileName is the named ElvUI profile to create, e.g. 'FloppyUI-DpsTank'.
 --
 -- Import order (as defined by the FloppyUI spec):
@@ -157,7 +161,7 @@ function Interface:ApplyLayout(layoutKey, profileName)
 		return false
 	end
 
-	-- Step 2: import in the required order.
+	-- Step 2: import in the required order (profile -> global -> private).
 	local success = true
 
 	if not self:ImportString(layout.profile) then success = false end
