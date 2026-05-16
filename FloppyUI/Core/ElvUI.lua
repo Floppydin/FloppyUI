@@ -1,20 +1,22 @@
 -- FloppyUI ElvUI Interface
--- Wraps ElvUI's Distributor module so the installer can apply FloppyUI's
--- export strings cleanly.
+-- Applies FloppyUI's ElvUI profile data WITHOUT going through ElvUI's
+-- Distributor. The Distributor shows its own confirmation popups and
+-- triggers its own reload, which conflicts with the installer flow.
 --
--- Key facts about ElvUI imports:
---   * Distributor:ImportProfile(string) decodes the string itself and
---     detects the data type (profile / private / global / filters).
---   * Only "profile" data is bound to a named profile. The installer
---     therefore creates and switches to a named profile BEFORE importing
---     the profile string, so the import lands in the right place.
---   * "private" and "global" data are NOT profile-bound (character- and
---     account-wide respectively). This is expected ElvUI behaviour.
+-- Instead, FloppyUI writes the plain Lua tables from Profiles.lua directly
+-- into ElvUI's database and then asks the installer to reload once.
+--
+-- Where each export type is written:
+--   profile -> a named profile inside ElvUI's profile database (E.data)
+--   private -> E.private  (character-bound settings)
+--   global  -> E.global   (account-wide settings)
+--
+-- ElvUI exports only contain values that DIFFER from ElvUI's defaults,
+-- so the tables are MERGED over whatever is already there rather than
+-- replacing entire branches.
 --
 -- Public API (FloppyPrivate.ElvUIInterface):
 --   :IsReady()                            -> bool, errorText
---   :CreateAndSwitchProfile(name)         -> bool
---   :ImportString(string)                 -> bool
 --   :ApplyLayout(layoutKey, profileName)  -> bool   (Step 2)
 --   :ApplyAuraFilters()                   -> bool   (Step 3)
 
@@ -24,6 +26,8 @@ local _, FloppyPrivate = ...
 local format = string.format
 local pcall  = pcall
 local type   = type
+local pairs  = pairs
+local next   = next
 
 local Interface = {}
 FloppyPrivate.ElvUIInterface = Interface
@@ -35,24 +39,44 @@ local function GetElv()
 end
 
 ----------------------------------------------------------------------
+-- Table merge helper
+----------------------------------------------------------------------
+
+-- Recursively copies every key from `source` into `target`.
+-- Existing sub-tables are merged, scalar values are overwritten.
+-- This mirrors how ElvUI applies an imported (defaults-stripped) profile.
+local function MergeInto(target, source)
+	for key, value in pairs(source) do
+		if type(value) == 'table' then
+			if type(target[key]) ~= 'table' then
+				target[key] = {}
+			end
+			MergeInto(target[key], value)
+		else
+			target[key] = value
+		end
+	end
+	return target
+end
+
+----------------------------------------------------------------------
 -- Readiness check
 ----------------------------------------------------------------------
 
--- Returns true if ElvUI and its Distributor are available, otherwise
--- false plus a human-readable reason.
+-- Returns true if ElvUI and its profile database are available,
+-- otherwise false plus a human-readable reason.
 function Interface:IsReady()
 	local E = GetElv()
 	if not E then
 		return false, 'ElvUI is not loaded.'
 	end
 
-	local D = E:GetModule('Distributor', true)
-	if not D then
-		return false, 'ElvUI Distributor module not found.'
+	if not E.data or type(E.data.SetProfile) ~= 'function' then
+		return false, 'ElvUI profile database is unavailable.'
 	end
 
-	if type(D.ImportProfile) ~= 'function' then
-		return false, 'ElvUI Distributor:ImportProfile is unavailable.'
+	if type(E.private) ~= 'table' or type(E.global) ~= 'table' then
+		return false, 'ElvUI private/global database is unavailable.'
 	end
 
 	return true
@@ -62,67 +86,21 @@ end
 -- Profile creation / switching
 ----------------------------------------------------------------------
 
--- Creates the named profile (if missing) and switches the active profile
--- to it. Uses ElvUI's AceDB profile API via E.data.
-function Interface:CreateAndSwitchProfile(profileName)
-	local E = GetElv()
-	if not E or not E.data then
-		FloppyPrivate:Print('|cffC80000Cannot access ElvUI profile database.|r')
-		return false
-	end
-
-	-- E.data is the AceDB instance for ElvUI's profile-bound settings.
+-- Creates the named profile (if missing), switches to it, and returns
+-- the profile table so the caller can write into it.
+local function CreateAndSelectProfile(E, profileName)
 	-- SetProfile creates the profile automatically if it does not exist.
 	local ok, err = pcall(function()
 		E.data:SetProfile(profileName)
 	end)
 
 	if not ok then
-		FloppyPrivate:Print(format('|cffC80000Failed to switch ElvUI profile: %s|r', tostring(err)))
-		return false
+		FloppyPrivate:Print(format('|cffC80000Failed to set ElvUI profile: %s|r', tostring(err)))
+		return nil
 	end
 
-	FloppyPrivate:Print(format('ElvUI profile set to |cff4beb2c%s|r.', profileName))
-	return true
-end
-
-----------------------------------------------------------------------
--- Generic string import
-----------------------------------------------------------------------
-
--- Imports a single ElvUI export string through the Distributor.
--- The Distributor decodes the string and applies it according to its
--- embedded data type.
-function Interface:ImportString(dataString)
-	if type(dataString) ~= 'string' or dataString == '' then
-		FloppyPrivate:Print('|cffC80000Import skipped: empty string.|r')
-		return false
-	end
-
-	local ready, reason = self:IsReady()
-	if not ready then
-		FloppyPrivate:Print(format('|cffC80000Import failed: %s|r', reason))
-		return false
-	end
-
-	local E = GetElv()
-	local D = E:GetModule('Distributor')
-
-	local ok, result = pcall(function()
-		return D:ImportProfile(dataString)
-	end)
-
-	if not ok then
-		FloppyPrivate:Print(format('|cffC80000Import error: %s|r', tostring(result)))
-		return false
-	end
-
-	if not result then
-		FloppyPrivate:Print('|cffC80000Import failed: ElvUI rejected the string.|r')
-		return false
-	end
-
-	return true
+	-- E.data.profile now points at the active (named) profile table.
+	return E.data.profile
 end
 
 ----------------------------------------------------------------------
@@ -132,15 +110,16 @@ end
 -- layoutKey   is a key inside FloppyPrivate.Profiles.ElvUI, e.g. 'DpsTank'.
 -- profileName is the named ElvUI profile to create, e.g. 'FloppyUI-DpsTank'.
 --
--- Import order (as defined by the FloppyUI spec):
---   1. profile   2. global   3. private
--- Aura Filters are intentionally NOT applied here -- they live in Step 3.
+-- Apply order (per FloppyUI spec): profile -> global -> private.
+-- Aura Filters are intentionally NOT applied here -- see Step 3.
 function Interface:ApplyLayout(layoutKey, profileName)
 	local ready, reason = self:IsReady()
 	if not ready then
 		FloppyPrivate:Print(format('|cffC80000%s|r', reason))
 		return false
 	end
+
+	local E = GetElv()
 
 	local layout = FloppyPrivate.Profiles
 		and FloppyPrivate.Profiles.ElvUI
@@ -151,55 +130,86 @@ function Interface:ApplyLayout(layoutKey, profileName)
 		return false
 	end
 
-	if not layout.profile or layout.profile == '' then
-		FloppyPrivate:Print('|cffC80000This layout has no profile string yet.|r')
+	if type(layout.profile) ~= 'table' or not next(layout.profile) then
+		FloppyPrivate:Print('|cffC80000This layout has no profile data yet.|r')
 		return false
 	end
 
-	-- Step 1: named profile must exist and be active before the import.
-	if not self:CreateAndSwitchProfile(profileName) then
+	-- 1) profile -> named profile
+	local profileTable = CreateAndSelectProfile(E, profileName)
+	if not profileTable then
 		return false
 	end
 
-	-- Step 2: import in the required order (profile -> global -> private).
-	local success = true
-
-	if not self:ImportString(layout.profile) then success = false end
-
-	if layout.global and layout.global ~= '' then
-		if not self:ImportString(layout.global) then success = false end
+	local ok = pcall(function()
+		MergeInto(profileTable, layout.profile)
+	end)
+	if not ok then
+		FloppyPrivate:Print('|cffC80000Failed to apply profile data.|r')
+		return false
 	end
 
-	if layout.private and layout.private ~= '' then
-		if not self:ImportString(layout.private) then success = false end
+	-- 2) global -> E.global
+	if type(layout.global) == 'table' and next(layout.global) then
+		pcall(function()
+			MergeInto(E.global, layout.global)
+		end)
 	end
 
-	if success then
-		FloppyPrivate:Print(format('Layout |cff4beb2c%s|r imported successfully.', profileName))
-	else
-		FloppyPrivate:Print('|cffC80000One or more parts of the layout failed to import.|r')
+	-- 3) private -> E.private
+	if type(layout.private) == 'table' and next(layout.private) then
+		pcall(function()
+			MergeInto(E.private, layout.private)
+		end)
+
+		-- Suppress ElvUI's own installer by marking it complete with the
+		-- actually installed ElvUI version (not the stale exported value).
+		if E.version then
+			E.private.install_complete = E.version
+		end
 	end
 
-	return success
+	FloppyPrivate:Print(format('Layout |cff4beb2c%s|r applied. A reload is required.', profileName))
+	return true
 end
 
 ----------------------------------------------------------------------
 -- Step 3: apply aura filters
 ----------------------------------------------------------------------
 
+-- Aura filters live in E.global.unitframe.aurafilters. The current
+-- FloppyUI export is empty, so this is a guarded no-op until real
+-- filter data is added to Profiles.lua.
 function Interface:ApplyAuraFilters()
-	local filters = FloppyPrivate.Profiles and FloppyPrivate.Profiles.AuraFilters
-
-	if not filters or filters == '' then
-		FloppyPrivate:Print('|cffC80000No aura filter string available.|r')
+	local ready, reason = self:IsReady()
+	if not ready then
+		FloppyPrivate:Print(format('|cffC80000%s|r', reason))
 		return false
 	end
 
-	local success = self:ImportString(filters)
+	local filters = FloppyPrivate.Profiles and FloppyPrivate.Profiles.AuraFilters
 
-	if success then
-		FloppyPrivate:Print('Aura filters imported successfully.')
+	if type(filters) ~= 'table' or not next(filters) then
+		FloppyPrivate:Print('No aura filters are defined yet -- nothing to apply.')
+		return false
 	end
 
-	return success
+	local E = GetElv()
+	local ok = pcall(function()
+		if type(E.global.unitframe) ~= 'table' then
+			E.global.unitframe = {}
+		end
+		if type(E.global.unitframe.aurafilters) ~= 'table' then
+			E.global.unitframe.aurafilters = {}
+		end
+		MergeInto(E.global.unitframe.aurafilters, filters)
+	end)
+
+	if not ok then
+		FloppyPrivate:Print('|cffC80000Failed to apply aura filters.|r')
+		return false
+	end
+
+	FloppyPrivate:Print('Aura filters applied. A reload is required.')
+	return true
 end
