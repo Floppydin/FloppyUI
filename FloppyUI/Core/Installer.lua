@@ -19,10 +19,12 @@ local _, FloppyPrivate = ...
 
 -- Lua / API cache
 local format      = string.format
+local next        = next
+local type        = type
 local CreateFrame = CreateFrame
 local C_UI_Reload = C_UI.Reload
-local StaticPopup_Show     = StaticPopup_Show
-local StaticPopupDialogs   = StaticPopupDialogs
+local StaticPopup_Show   = StaticPopup_Show
+local StaticPopupDialogs = StaticPopupDialogs
 
 -- Visual constants
 local FRAME_WIDTH       = 600
@@ -55,7 +57,7 @@ local stepTitles  = {}
 -- page on the next PLAYER_ENTERING_WORLD (handled in Core.lua).
 
 StaticPopupDialogs['FLOPPYUI_RELOAD_REQUIRED'] = {
-	text = '|cff4beb2cFloppyUI|r\n\nThe import was applied. A UI reload is required for all changes to take effect.\n\nReloading is mandatory for the profile to display correctly.',
+	text = '|cff4beb2cFloppyUI|r\n\nThe selected settings have been applied.\n\nA UI reload is mandatory for all changes to take effect and display correctly.',
 	button1 = 'Reload Now',
 	button2 = 'Later',
 	OnAccept = function()
@@ -330,6 +332,14 @@ local function SetOption(index, text, onClick)
 	b:Show()
 end
 
+-- Returns true if the given ElvUI layout has usable profile data.
+local function LayoutHasData(layoutKey)
+	local layout = FloppyPrivate.Profiles
+		and FloppyPrivate.Profiles.ElvUI
+		and FloppyPrivate.Profiles.ElvUI[layoutKey]
+	return layout and type(layout.profile) == 'table' and next(layout.profile) ~= nil
+end
+
 -- Shared handler for Step 2 layout buttons.
 -- Applies the layout via the ElvUI interface and, on success, prompts
 -- for the mandatory reload.
@@ -340,8 +350,7 @@ local function ApplyElvUILayout(layoutKey, profileName)
 		return
 	end
 
-	local success = iface:ApplyLayout(layoutKey, profileName)
-	if success then
+	if iface:ApplyLayout(layoutKey, profileName) then
 		PromptReload()
 	end
 end
@@ -369,17 +378,14 @@ local function BuildPages()
 	stepTitles[2] = 'ElvUI Layouts'
 	pages[2] = function()
 		mainFrame.SubTitle:SetText('ElvUI Layouts')
-		mainFrame.Desc[1]:SetText('Choose the ElvUI layout that fits your role. The layout is imported into a dedicated FloppyUI profile.')
-		mainFrame.Desc[2]:SetText(format('|cff4beb2c%s|r', 'Import order: Profile, Global, Private. A mandatory reload follows.'))
+		mainFrame.Desc[1]:SetText('Choose the ElvUI layout that fits your role. The layout is applied to a dedicated FloppyUI profile.')
+		mainFrame.Desc[2]:SetText(format('|cff4beb2c%s|r', 'Apply order: Profile, Global, Private. A mandatory reload follows.'))
 		mainFrame.Desc[3]:SetText('DPS & Tanks creates the profile "FloppyUI-DpsTank".')
 		SetOption(1, 'DPS & Tanks', function()
 			ApplyElvUILayout('DpsTank', PROFILE_DPSTANK)
 		end)
-		-- Healing has no strings yet -- present it as not-yet-available.
-		local healing = FloppyPrivate.Profiles
-			and FloppyPrivate.Profiles.ElvUI
-			and FloppyPrivate.Profiles.ElvUI.Healing
-		if healing and healing.profile and healing.profile ~= '' then
+		-- Healing has no data yet -- present it as not-yet-available.
+		if LayoutHasData('Healing') then
 			SetOption(2, 'Healing', function()
 				ApplyElvUILayout('Healing', PROFILE_HEAL)
 			end)
@@ -396,17 +402,28 @@ local function BuildPages()
 		mainFrame.SubTitle:SetText('ElvUI Filters')
 		mainFrame.Desc[1]:SetText('Optionally apply the FloppyUI aura filter lists.')
 		mainFrame.Desc[2]:SetText(format('|cff4beb2c%s|r', 'This step is optional. Skip it if you prefer to keep your own filters.'))
-		mainFrame.Desc[3]:SetText('Existing filters with the same name will be overwritten.')
-		SetOption(1, 'Apply Aura Filters', function()
-			local iface = FloppyPrivate.ElvUIInterface
-			if not iface then
-				FloppyPrivate:Print('|cffC80000ElvUI interface not available.|r')
-				return
-			end
-			if iface:ApplyAuraFilters() then
-				PromptReload()
-			end
-		end)
+
+		local filters = FloppyPrivate.Profiles and FloppyPrivate.Profiles.AuraFilters
+		local hasFilters = type(filters) == 'table' and next(filters) ~= nil
+
+		if hasFilters then
+			mainFrame.Desc[3]:SetText('Existing filters with the same name will be overwritten.')
+			SetOption(1, 'Apply Aura Filters', function()
+				local iface = FloppyPrivate.ElvUIInterface
+				if not iface then
+					FloppyPrivate:Print('|cffC80000ElvUI interface not available.|r')
+					return
+				end
+				if iface:ApplyAuraFilters() then
+					PromptReload()
+				end
+			end)
+		else
+			mainFrame.Desc[3]:SetText('No aura filters are bundled yet. This step will become available in a future update.')
+			SetOption(1, '|cff888888No Filters (soon)|r', function()
+				FloppyPrivate:Print('No aura filters are bundled yet.')
+			end)
+		end
 	end
 
 	-- 4: ElvUI Plugins
