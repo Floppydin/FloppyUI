@@ -1,4 +1,4 @@
-## Interface: 110200
+## Interface: 120005
 ## Title: |cff4beb2cFloppyUI|r
 ## Notes: An ElvUI extension by Floppydin.
 ## Author: Floppydin
